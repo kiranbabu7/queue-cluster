@@ -1,0 +1,477 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  queue-cluster-monitoring
+
+  SAM Template for monitoring RabbitMQ Nodes and Cluster
+
+Globals:
+  Function:
+    Timeout: 10
+
+Parameters:
+  Env:
+    Description: Environment
+    Type: String
+  VpcId:
+    Description: VPC
+    Type: String
+  SubnetA:
+    Description: SubnetA
+    Type: String
+  SubnetB:
+    Description: SubnetB
+    Type: String
+  SubnetC:
+    Description: SubnetC
+    Type: String
+  SubnetD:
+    Description: SubnetD
+    Type: String
+  SubnetE:
+    Description: SubnetE
+    Type: String
+  SubnetF:
+    Description: SubnetF
+    Type: String
+  InstanceType:
+    Description: The type of instance to use for deploying RabbitMQ node
+    Type: String
+    Default: t3a.micro
+  PemKey:
+    Description: Key Pair name to use for EC2 Instance
+    Type: String
+    Default: ecstest
+  NameSpace:
+    Description: New service will be created in specified Namespace Id 
+    Type: String
+  Node1:
+    Description: Node1 Name
+    Type: String
+  Node2:
+    Description: Node2 Name
+    Type: String
+  Node3:
+    Description: Node3 Name
+    Type: String
+  IncomingSecurityGroup:
+    Description: The security group of source which will connect with rabbitmq
+    Type: String
+  RabbitMQUser:
+    Description: Rabbitmq Username
+    Type: String
+  RabbitMQPassword:
+    Description: Rabbitmq Password
+    Type: String
+  ErlangCookie:
+    Description: Rabbitmq Password
+    Type: String
+
+Resources:
+  RabbitMQNodeIAMRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Path: / 
+      Description: Code Commit Access
+      Policies:
+        - PolicyName: CodeAccess
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "codecommit:*"
+                  - "servicediscovery:*"
+                  - "route53:CreateHealthCheck"
+                  - "s3:GetObject"
+                  - "s3:GetObjectVersion"
+                Resource: '*'
+  RabbitMQNodeInstanceProfile:
+    Type: 'AWS::IAM::InstanceProfile'
+    Properties: 
+      Path: /
+      Roles:
+        - !Ref RabbitMQNodeIAMRole
+  RabbitMQNodeSecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      VpcId: !Ref VpcId
+      GroupDescription: SG for RabbitMQ nodes
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: '5672'
+          ToPort: '5672'
+          SourceSecurityGroupId: !Ref IncomingSecurityGroup
+        - IpProtocol: tcp
+          FromPort: '15672'
+          ToPort: '15672'
+          SourceSecurityGroupId: !Ref RabbitMQMonitoringLambdaSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Join [ "_", [ !Ref Env, RabbitMQ, SG ] ]
+  RabbitMQClusterSecurityGroupIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !GetAtt RabbitMQNodeSecurityGroup.GroupId
+      IpProtocol: tcp
+      FromPort: 25672
+      ToPort: 25672
+      SourceSecurityGroupId: !GetAtt RabbitMQNodeSecurityGroup.GroupId
+    DependsOn: RabbitMQNodeSecurityGroup
+  RabbitMQERLANGSecurityGroupIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !GetAtt RabbitMQNodeSecurityGroup.GroupId
+      IpProtocol: tcp
+      FromPort: 4369
+      ToPort: 4369
+      SourceSecurityGroupId: !GetAtt RabbitMQNodeSecurityGroup.GroupId
+    DependsOn: RabbitMQNodeSecurityGroup
+  RabbitMQNode1LaunchTemplate:
+    Type: 'AWS::EC2::LaunchTemplate'
+    Properties:
+      LaunchTemplateName: !Join [ "_", [ !Ref Env, !Ref Node1 ] ]
+      LaunchTemplateData:
+        ImageId: ami-026b57f3c383c2eec
+        InstanceType: !Ref InstanceType
+        KeyName: !Ref PemKey
+        IamInstanceProfile:
+          Arn: !GetAtt RabbitMQNodeInstanceProfile.Arn
+        SecurityGroupIds:
+        - !Ref RabbitMQNodeSecurityGroup
+        UserData:
+          Fn::Base64:
+            !Sub |
+              #!/bin/bash -xe
+              yum install wget -y
+              yum install git -y
+              yum install awscli -y
+              yum update -y
+              sudo amazon-linux-extras install docker
+              sudo service docker start
+              sudo systemctl enable docker
+              sudo usermod -a -G docker ec2-user
+              pip3 install git-remote-codecommit
+              pip3 install requests
+              pip3 install boto3
+              cd /home/ec2-user/
+              git clone codecommit::us-east-1://sourcing
+              sudo chmod -R 777 /home/ec2-user/sourcing/
+              cd sourcing/
+              git checkout master
+              cd repositories/queue-cluster/creation/
+              make startnode ENV=${Env} CurrentNode=${Node1} User=${RabbitMQUser} Password=${RabbitMQPassword} Cookie=${ErlangCookie} Node2=${Node2} Node3=${Node3}
+  RabbitMQNode1ASG:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      AutoScalingGroupName: !Join [ "_", [ !Ref Env, !Ref Node1 , ASG ] ]
+      LaunchTemplate:
+        LaunchTemplateId: !Ref RabbitMQNode1LaunchTemplate
+        Version: !GetAtt RabbitMQNode1LaunchTemplate.LatestVersionNumber
+      MaxSize: '1'
+      MinSize: '1'
+      DesiredCapacity: '1'
+      Tags:
+        - Key: Name
+          Value: !Join [ "_", [ !Ref Env, !Ref Node1 ] ]
+          PropagateAtLaunch: true
+      VPCZoneIdentifier:
+        - !Ref SubnetA
+        - !Ref SubnetD
+  Node1DiscoveryService:
+    Type: 'AWS::ServiceDiscovery::Service'
+    Properties:
+      Description: RabbitMQ Node Discovery Service
+      DnsConfig:
+        DnsRecords:
+          - Type: A
+            TTL: 300
+        RoutingPolicy: MULTIVALUE
+      HealthCheckCustomConfig:
+        FailureThreshold: 3
+      Name: !Ref Node1
+      NamespaceId: !Ref NameSpace
+  RabbitMQNode2LaunchTemplate:
+    Type: 'AWS::EC2::LaunchTemplate'
+    Properties:
+      LaunchTemplateName: !Join [ "_", [ !Ref Env, !Ref Node2 ] ]
+      LaunchTemplateData:
+        ImageId: ami-026b57f3c383c2eec
+        InstanceType: !Ref InstanceType
+        KeyName: !Ref PemKey
+        IamInstanceProfile:
+          Arn: !GetAtt RabbitMQNodeInstanceProfile.Arn
+        SecurityGroupIds:
+        - !Ref RabbitMQNodeSecurityGroup
+        UserData:
+          Fn::Base64:
+            !Sub |
+              #!/bin/bash -xe
+              yum install wget -y
+              yum install git -y
+              yum install awscli -y
+              yum update -y
+              sudo amazon-linux-extras install docker
+              sudo service docker start
+              sudo systemctl enable docker
+              sudo usermod -a -G docker ec2-user
+              pip3 install git-remote-codecommit
+              pip3 install requests
+              pip3 install boto3
+              cd /home/ec2-user/
+              git clone codecommit::us-east-1://sourcing
+              sudo chmod -R 777 /home/ec2-user/sourcing/
+              cd sourcing/
+              git checkout master
+              cd repositories/queue-cluster/creation/
+              make startnode ENV=${Env} CurrentNode=${Node2} User=${RabbitMQUser} Password=${RabbitMQPassword} Cookie=${ErlangCookie} Node2=${Node1} Node3=${Node3}
+  RabbitMQNode2ASG:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      AutoScalingGroupName: !Join [ "_", [ !Ref Env, !Ref Node2 , ASG ] ]
+      LaunchTemplate:
+        LaunchTemplateId: !Ref RabbitMQNode2LaunchTemplate
+        Version: !GetAtt RabbitMQNode2LaunchTemplate.LatestVersionNumber
+      MaxSize: '1'
+      MinSize: '1'
+      DesiredCapacity: '1'
+      Tags:
+        - Key: Name
+          Value: !Join [ "_", [ !Ref Env, !Ref Node2 ] ]
+          PropagateAtLaunch: true
+      VPCZoneIdentifier:
+        - !Ref SubnetB
+        - !Ref SubnetE
+  Node2DiscoveryService:
+    Type: 'AWS::ServiceDiscovery::Service'
+    Properties:
+      Description: RabbitMQ Node Discovery Service
+      DnsConfig:
+        DnsRecords:
+          - Type: A
+            TTL: 300
+        RoutingPolicy: MULTIVALUE
+      HealthCheckCustomConfig:
+        FailureThreshold: 3
+      Name: !Ref Node2
+      NamespaceId: !Ref NameSpace
+  RabbitMQNode3LaunchTemplate:
+    Type: 'AWS::EC2::LaunchTemplate'
+    Properties:
+      LaunchTemplateName: !Join [ "_", [ !Ref Env, !Ref Node3 ] ]
+      LaunchTemplateData:
+        ImageId: ami-026b57f3c383c2eec
+        InstanceType: !Ref InstanceType
+        KeyName: !Ref PemKey
+        IamInstanceProfile:
+          Arn: !GetAtt RabbitMQNodeInstanceProfile.Arn
+        SecurityGroupIds:
+        - !Ref RabbitMQNodeSecurityGroup
+        UserData:
+          Fn::Base64:
+            !Sub |
+              #!/bin/bash -xe
+              yum install wget -y
+              yum install git -y
+              yum install awscli -y
+              yum update -y
+              sudo amazon-linux-extras install docker
+              sudo service docker start
+              sudo systemctl enable docker
+              sudo usermod -a -G docker ec2-user
+              pip3 install git-remote-codecommit
+              pip3 install requests
+              pip3 install boto3
+              cd /home/ec2-user/
+              git clone codecommit::us-east-1://sourcing
+              sudo chmod -R 777 /home/ec2-user/sourcing/
+              cd sourcing/
+              git checkout master
+              cd repositories/queue-cluster/creation/
+              make startnode ENV=${Env} CurrentNode=${Node3} User=${RabbitMQUser} Password=${RabbitMQPassword} Cookie=${ErlangCookie} Node2=${Node1} Node3=${Node2}
+  RabbitMQNode3ASG:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      AutoScalingGroupName: !Join [ "_", [ !Ref Env, !Ref Node3 , ASG ] ]
+      LaunchTemplate:
+        LaunchTemplateId: !Ref RabbitMQNode3LaunchTemplate
+        Version: !GetAtt RabbitMQNode3LaunchTemplate.LatestVersionNumber
+      MaxSize: '1'
+      MinSize: '1'
+      DesiredCapacity: '1'
+      Tags:
+        - Key: Name
+          Value: !Join [ "_", [ !Ref Env, !Ref Node3 ] ]
+          PropagateAtLaunch: true
+      VPCZoneIdentifier:
+        - !Ref SubnetC
+        - !Ref SubnetF
+  Node3DiscoveryService:
+    Type: 'AWS::ServiceDiscovery::Service'
+    Properties:
+      Description: RabbitMQ Node Discovery Service
+      DnsConfig:
+        DnsRecords:
+          - Type: A
+            TTL: 300
+        RoutingPolicy: MULTIVALUE
+      HealthCheckCustomConfig:
+        FailureThreshold: 3
+      Name: !Ref Node3
+      NamespaceId: !Ref NameSpace
+  RabbitMQMonitoringLambdaSecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      VpcId: !Ref VpcId
+      GroupDescription: SG for monitoring RabbitMQ
+      Tags:
+        - Key: Name
+          Value: !Join [ "_", [ !Ref Env, RabbitMQ_Monitoring, SG ] ]
+  PermissionForMonitoringSchedulerToInvokeRabbitMQNode1MonitoringLambda: 
+    Type: AWS::Lambda::Permission
+    Properties: 
+      FunctionName: 
+        Ref: "RabbitMQNode1MonitorFunction"
+      Action: "lambda:InvokeFunction"
+      Principal: "events.amazonaws.com"
+      SourceArn: 
+        Fn::GetAtt: 
+          - "ClusterMonitoringScheduleRule"
+          - "Arn"
+  PermissionForMonitoringSchedulerToInvokeRabbitMQNode2MonitoringLambda: 
+    Type: AWS::Lambda::Permission
+    Properties: 
+      FunctionName: 
+        Ref: "RabbitMQNode2MonitorFunction"
+      Action: "lambda:InvokeFunction"
+      Principal: "events.amazonaws.com"
+      SourceArn: 
+        Fn::GetAtt: 
+          - "ClusterMonitoringScheduleRule"
+          - "Arn"
+  PermissionForMonitoringSchedulerToInvokeRabbitMQNode3MonitoringLambda: 
+    Type: AWS::Lambda::Permission
+    Properties: 
+      FunctionName: 
+        Ref: "RabbitMQNode3MonitorFunction"
+      Action: "lambda:InvokeFunction"
+      Principal: "events.amazonaws.com"
+      SourceArn: 
+        Fn::GetAtt: 
+          - "ClusterMonitoringScheduleRule"
+          - "Arn"
+  ClusterMonitoringScheduleRule:
+    Type: AWS::Events::Rule
+    Properties: 
+      Description: "RabbitMQ Nodes Monitoring Function Invocation Schedule"
+      ScheduleExpression: "rate(1 minute)"
+      State: "ENABLED"
+      Targets: 
+        - 
+          Arn: 
+            Fn::GetAtt: 
+              - "RabbitMQNode1MonitorFunction"
+              - "Arn"
+          Id: "TargetFunction1"
+        -
+          Arn: 
+            Fn::GetAtt: 
+              - "RabbitMQNode2MonitorFunction"
+              - "Arn"
+          Id: "TargetFunction2"
+        -
+          Arn: 
+            Fn::GetAtt: 
+              - "RabbitMQNode3MonitorFunction"
+              - "Arn"
+          Id: "TargetFunction3"
+  RabbitMQNode1MonitorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Join [ "_", [ !Ref Env, !Ref Node1, Monitor ] ]
+      CodeUri: monitor/
+      Handler: node.lambda_handler
+      Runtime: python3.9
+      Policies:
+        - Statement:
+          - Sid: CloudwatchPutMetricsNode1
+            Effect: Allow
+            Action:
+              - cloudwatch:PutMetricData
+            Resource: '*'
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref RabbitMQMonitoringLambdaSecurityGroup
+        SubnetIds:
+          - !Ref SubnetA
+          - !Ref SubnetB
+      Environment:
+        Variables:
+          Env: !Ref Env
+          Node: !Ref Node1
+          User: !Ref RabbitMQUser
+          Password: !Ref RabbitMQPassword
+          Host: !Join [ ".", [ !Ref Node1, !Ref Env ] ]
+  RabbitMQNode2MonitorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Join [ "_", [ !Ref Env, !Ref Node2, Monitor ] ]
+      CodeUri: monitor/
+      Handler: node.lambda_handler
+      Runtime: python3.9
+      Policies:
+        - Statement:
+          - Sid: CloudwatchPutMetricsNode2
+            Effect: Allow
+            Action:
+              - cloudwatch:PutMetricData
+            Resource: '*'
+      Environment:
+        Variables:
+          Env: !Ref Env
+          Node: !Ref Node2
+          User: !Ref RabbitMQUser
+          Password: !Ref RabbitMQPassword
+          Host: !Join [ ".", [ !Ref Node2, !Ref Env ] ]
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref RabbitMQMonitoringLambdaSecurityGroup
+        SubnetIds:
+          - !Ref SubnetA
+          - !Ref SubnetB
+  RabbitMQNode3MonitorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Join [ "_", [ !Ref Env, !Ref Node3,  Monitor ] ]
+      CodeUri: monitor/
+      Handler: node.lambda_handler
+      Runtime: python3.9
+      Policies:
+        - Statement:
+          - Sid: CloudwatchPutMetricsNode3
+            Effect: Allow
+            Action:
+              - cloudwatch:PutMetricData
+            Resource: '*'
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref RabbitMQMonitoringLambdaSecurityGroup
+        SubnetIds:
+          - !Ref SubnetA
+          - !Ref SubnetB
+      Environment:
+        Variables:
+          Env: !Ref Env
+          Node: !Ref Node3
+          User: !Ref RabbitMQUser
+          Password: !Ref RabbitMQPassword
+          Host: !Join [ ".", [ !Ref Node3, !Ref Env ] ]

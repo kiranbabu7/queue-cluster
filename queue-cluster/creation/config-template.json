@@ -1,0 +1,46 @@
+[
+    {
+        "ParameterKey": "Env",
+        "ParameterValue": "test"
+    },
+    {
+        "ParameterKey": "VpcId",
+        "ParameterValue": "vpc-dc45daa6"
+    },
+    {
+        "ParameterKey": "Subnet",
+        "ParameterValue": "subnet-c5da99a2"
+    },
+    {
+        "ParameterKey": "NameSpace",
+        "ParameterValue": "ns-awgcbn2ho3uzzes3"
+    },
+    {
+        "ParameterKey": "IncomingSecurityGroup",
+        "ParameterValue": "sg-09dcbe5af29421a1c"
+    },
+    {
+        "ParameterKey": "Node1",
+        "ParameterValue": "RabbitMQ_Node_1"
+    },
+    {
+        "ParameterKey": "Node2",
+        "ParameterValue": "RabbitMQ_Node_2"
+    },
+    {
+        "ParameterKey": "Node3",
+        "ParameterValue": "RabbitMQ_Node_3"
+    },
+    {
+        "ParameterKey": "RabbitMQUser",
+        "ParameterValue": "krinati-rabbit"
+    },
+    {
+        "ParameterKey": "RabbitMQPassword",
+        "ParameterValue": "go2Rabbit@Krinati"
+    },
+    {
+        "ParameterKey": "ErlangCookie",
+        "ParameterValue": "A2N211334G5JH3NUBC9"
+    }
+]
